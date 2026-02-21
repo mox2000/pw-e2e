@@ -15,6 +15,13 @@ phases:
       - npm -v
       - npm ci
       - npx playwright install --with-deps
+
+      - echo "=== STS caller identity ==="
+      - aws sts get-caller-identity
+      - echo "=== S3 write test ==="
+      - echo ok > /tmp/cb_s3_test.txt
+      - aws s3 cp /tmp/cb_s3_test.txt s3://playwright-e2e-bucket/_codebuild_write_test/$CODEBUILD_BUILD_ID.txt
+
   build:
     commands:
       - npx playwright test
