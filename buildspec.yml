@@ -25,6 +25,8 @@ phases:
   build:
     commands:
       - npx playwright test
+      - aws s3 sync playwright-report "s3://playwright-e2e-bucket/playwright-report/$CODEBUILD_BUILD_ID/" --delete
+      - aws s3 sync test-results "s3://playwright-e2e-bucket/test-results/$CODEBUILD_BUILD_ID/" --delete || true
 
 artifacts:
   files:
