@@ -3,7 +3,6 @@ version: 0.2
 env:
   variables:
     CI: "true"
-    # 必要ならテスト対象URLをここで渡す（あとで設定してOK）
     # BASE_URL: "https://stg.example.com"
 
 phases:
@@ -18,24 +17,19 @@ phases:
 
   build:
     commands:
-      # テストが失敗しても後続（レポートアップロード）を必ず実行する
       - set +e
       - npx playwright test
       - TEST_EXIT_CODE=$?
-      - echo "Playwright exit code: $TEST_EXIT_CODE"
+      - echo "Playwright exit code: ${TEST_EXIT_CODE}"
 
-      # レポート/成果物の存在確認（デバッグ用。不要なら後で消してOK）
       - ls -la
       - ls -la playwright-report || true
       - ls -la test-results || true
 
-      # ビルドID単位で保存
-      - aws s3 sync playwright-report "s3://playwright-e2e-bucket/playwright-report/$CODEBUILD_BUILD_ID/" --delete
-      - aws s3 sync test-results "s3://playwright-e2e-bucket/test-results/$CODEBUILD_BUILD_ID/" --delete || true
+      - aws s3 sync playwright-report "s3://playwright-e2e-bucket/playwright-report/${CODEBUILD_BUILD_ID}/" --delete
+      - aws s3 sync test-results "s3://playwright-e2e-bucket/test-results/${CODEBUILD_BUILD_ID}/" --delete || true
 
-      # 常に最新を参照できる場所へも保存
       - aws s3 sync playwright-report "s3://playwright-e2e-bucket/playwright-report/latest/" --delete
       - aws s3 sync test-results "s3://playwright-e2e-bucket/test-results/latest/" --delete || true
 
-      # テスト結果に合わせてビルドを成功/失敗にする
-      - exit $TEST_EXIT_CODE
+      - exit ${TEST_EXIT_CODE}
