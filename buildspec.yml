@@ -19,8 +19,8 @@ phases:
     commands:
       - set +e
       - npx playwright test
-      - TEST_EXIT_CODE=$?
-      - echo "Playwright exit code: ${TEST_EXIT_CODE}"
+      - "TEST_EXIT_CODE=$?"
+      - "echo Playwright exit code: ${TEST_EXIT_CODE}"
 
       - ls -la
       - ls -la playwright-report || true
