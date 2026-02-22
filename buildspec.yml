@@ -17,11 +17,17 @@ phases:
 
   build:
     commands:
+      # テスト失敗で BUILD を止めない（後でPOST_BUILDでアップロードする）
       - set +e
       - npx playwright test
       - "TEST_EXIT_CODE=$?"
       - "echo Playwright exit code: ${TEST_EXIT_CODE}"
+      # BUILDフェーズ自体は成功扱いで終わらせる（POST_BUILDを確実に走らせる）
+      - exit 0
 
+  post_build:
+    commands:
+      - echo "=== Upload Playwright reports to S3 (always) ==="
       - ls -la
       - ls -la playwright-report || true
       - ls -la test-results || true
@@ -32,4 +38,5 @@ phases:
       - aws s3 sync playwright-report "s3://playwright-e2e-bucket/playwright-report/latest/" --delete
       - aws s3 sync test-results "s3://playwright-e2e-bucket/test-results/latest/" --delete || true
 
-      - exit ${TEST_EXIT_CODE}
+      # テスト結果に合わせて最終ステータスを返す（失敗ならビルド失敗）
+      - "exit ${TEST_EXIT_CODE}"
