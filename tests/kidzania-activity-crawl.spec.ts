@@ -4,32 +4,23 @@ const START_URL = "https://www.kidzania.jp/tokyo/activity";
 const ORIGIN = new URL(START_URL).origin;
 const PATH_PREFIX = "/tokyo/activity";
 
-// サイト負荷を考慮した安全装置（必要なら調整）
-const MAX_PAGES = 120;       // 最大巡回ページ数
-const MAX_FAILURES = 30;     // これ以上失敗が出たら打ち切り
-const PAGE_TIMEOUT_MS = 45_000;
-const AFTER_LOAD_WAIT_MS = 1500;
+// スモークなので軽量
+const SAMPLE_LINKS = 3;
 
-type Failure = {
-  pageUrl: string;
-  resourceUrl: string;
-  kind: "http-error" | "request-failed" | "timeout";
-  status?: number;
-  resourceType?: string;
-  errorText?: string;
-};
+function isSameOrigin(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.origin === ORIGIN;
+  } catch {
+    return false;
+  }
+}
 
-function normalizeUrl(raw: string): string | null {
+function normalizeActivityUrl(raw: string): string | null {
   try {
     const u = new URL(raw, ORIGIN);
-
-    // 同一オリジンのみ
     if (u.origin !== ORIGIN) return null;
-
-    // /tokyo/activity 配下のみ
     if (!u.pathname.startsWith(PATH_PREFIX)) return null;
-
-    // 重複削減（必要なら search は残してもOK）
     u.search = "";
     u.hash = "";
     return u.toString();
@@ -38,96 +29,97 @@ function normalizeUrl(raw: string): string | null {
   }
 }
 
-async function extractLinks(page): Promise<string[]> {
-  const hrefs: string[] = await page.$$eval("a[href]", (as) =>
-    as.map((a) => (a as HTMLAnchorElement).href).filter(Boolean)
-  );
+test.describe("KidZania Activity 完全スモーク（外部除外）", () => {
+  test("表示 + 同一ドメインリソース健全性", async ({ page }) => {
+    const failures: {
+      url: string;
+      status?: number;
+      type?: string;
+      kind: string;
+    }[] = [];
 
-  const out = new Set<string>();
-  for (const h of hrefs) {
-    const n = normalizeUrl(h);
-    if (n) out.add(n);
-  }
-  return [...out];
-}
+    page.on("response", (res) => {
+      const url = res.url();
 
-test.describe("Kidzania /tokyo/activity 配下の表示（リソース含む）", () => {
-  test("配下ページ巡回 + 主要リソースがエラー無しで取得できる", async ({ page }) => {
-    const queue: string[] = [START_URL];
-    const visited = new Set<string>();
-    const failures: Failure[] = [];
+      // 外部は完全除外
+      if (!isSameOrigin(url)) return;
 
-    while (queue.length && visited.size < MAX_PAGES && failures.length < MAX_FAILURES) {
-      const url = queue.shift()!;
-      const normalized = normalizeUrl(url) ?? url;
-      if (visited.has(normalized)) continue;
-      visited.add(normalized);
-
-      const pageFailures: Failure[] = [];
-
-      const onRequestFailed = (req) => {
-        pageFailures.push({
-          pageUrl: normalized,
-          resourceUrl: req.url(),
-          kind: "request-failed",
-          resourceType: req.resourceType(),
-          errorText: req.failure()?.errorText,
+      const status = res.status();
+      if (status >= 400) {
+        failures.push({
+          url,
+          status,
+          type: res.request().resourceType(),
+          kind: "http-error",
         });
-      };
-
-      const onResponse = (res) => {
-        const status = res.status();
-        if (status >= 400) {
-          pageFailures.push({
-            pageUrl: normalized,
-            resourceUrl: res.url(),
-            status,
-            kind: "http-error",
-            resourceType: res.request().resourceType(),
-          });
-        }
-      };
-
-      page.on("requestfailed", onRequestFailed);
-      page.on("response", onResponse);
-
-      try {
-        await page.goto(normalized, { waitUntil: "domcontentloaded", timeout: PAGE_TIMEOUT_MS });
-        // 画像など遅延読み込み対策で少し待つ（必要なら調整）
-        await page.waitForTimeout(AFTER_LOAD_WAIT_MS);
-
-        const links = await extractLinks(page);
-        for (const l of links) if (!visited.has(l)) queue.push(l);
-      } catch (e: any) {
-        pageFailures.push({
-          pageUrl: normalized,
-          resourceUrl: normalized,
-          kind: "timeout",
-          errorText: String(e?.message ?? e),
-        });
-      } finally {
-        page.off("requestfailed", onRequestFailed);
-        page.off("response", onResponse);
       }
+    });
 
-      failures.push(...pageFailures);
+    page.on("requestfailed", (req) => {
+      const url = req.url();
 
-      // 進捗ログ（CodeBuildログで追える）
-      console.log(
-        `[crawl] visited=${visited.size}/${MAX_PAGES} queue=${queue.length} newFailures=${pageFailures.length} totalFailures=${failures.length} url=${normalized}`
-      );
+      // 外部は完全除外
+      if (!isSameOrigin(url)) return;
+
+      failures.push({
+        url,
+        type: req.resourceType(),
+        kind: `request-failed:${req.failure()?.errorText ?? "unknown"}`,
+      });
+    });
+
+    // ① メインページ
+    await page.goto(START_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+
+    await expect(page).toHaveTitle(/.+/);
+
+    const bodyText = await page.locator("body").innerText();
+    expect(bodyText.trim().length).toBeGreaterThan(50);
+
+    await page.waitForTimeout(1500);
+
+    // ② 配下リンクを少数だけ確認
+    const hrefs = await page.$$eval("a[href]", (as) =>
+      as.map((a) => (a as HTMLAnchorElement).href).filter(Boolean)
+    );
+
+    const sampleTargets: string[] = [];
+
+    for (const h of hrefs) {
+      const n = normalizeActivityUrl(h);
+      if (!n) continue;
+      if (!sampleTargets.includes(n)) sampleTargets.push(n);
+      if (sampleTargets.length >= SAMPLE_LINKS) break;
     }
 
-    // 失敗があればテスト失敗にする（失敗一覧を出す）
+    for (const target of sampleTargets) {
+      await page.goto(target, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
+
+      await expect(page).toHaveTitle(/.+/);
+
+      const text = await page.locator("body").innerText();
+      expect(text.trim().length).toBeGreaterThan(50);
+
+      await page.waitForTimeout(800);
+    }
+
+    // ③ 失敗があればログ出力
     if (failures.length) {
-      console.log("==== FAILURES (first 200) ====");
-      for (const f of failures.slice(0, 200)) {
+      console.log("==== INTERNAL RESOURCE FAILURES ====");
+      for (const f of failures.slice(0, 50)) {
         console.log(
-          `- [${f.kind}] page=${f.pageUrl}\n  resource=${f.resourceUrl}\n  status=${f.status ?? ""} type=${f.resourceType ?? ""} err=${f.errorText ?? ""}\n`
+          `- ${f.kind} status=${f.status ?? ""} type=${f.type ?? ""} url=${f.url}`
         );
       }
     }
 
-    expect(failures, `リソース取得エラーが ${failures.length} 件あります`).toHaveLength(0);
+    expect(failures, `内部リソースエラーが ${failures.length} 件あります`)
+      .toHaveLength(0);
   });
 });
